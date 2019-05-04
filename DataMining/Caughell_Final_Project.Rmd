@@ -1,0 +1,1234 @@
+---
+title: "Exploring Basketball Prospects and Projecting Career Success"
+author: "Paul Caughell"
+date: "6/19/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Loading needed packages
+library(RCurl)
+library(xml2)
+library(rvest)
+library(plyr)
+library(dplyr)
+library(arules)
+library(arulesViz)
+library(naivebayes)
+library(psych)
+library(ggplot2)
+library(randomForest)
+library(mclust)
+library(cluster)
+library(lsa)
+library(igraph)
+library(e1071)
+library(rpart)
+library(corrplot)
+```
+
+## Analysis
+
+  ### Data
+  
+  
+```{r}
+# Setting seed for setting seed for reproducible results. 
+set.seed(111)
+
+# Reading in the collected data via CSVs
+NBA_Players_Raw <- read.csv("/Users/paulcaughell/Documents/Syracuse - Data Science/Data Mining - IST 565/NBA Project/NBA Player Stats.csv")
+
+# Viewing the structure and summary of the dataframes
+str(NBA_Players_Raw)
+summary(NBA_Players_Raw)
+```
+
+
+
+```{r}
+# Removing all columns not related to win shares and the player name
+NBA_Players <- subset(NBA_Players_Raw, select = c(Player, WS))
+head(NBA_Players)
+```
+
+The data is checked to make sure that each player has a win share value associated which is indicated as such since none of the observations contained is missing data.  As indicated by the descriptive statistics players win shares can range from -2 meaning they were detrimental to their team up to over 130.  There are 929 different observations for each of the players who has accumulated statistics since the 2006-2007 season. 
+
+```{r}
+# Checking on missing data
+nrow(NBA_Players[!complete.cases(NBA_Players), ])
+summary(NBA_Players)
+str(NBA_Players)
+```
+
+```{r}
+# Reading in the collected data via CSV
+NBA_Draft_Raw <- read.csv("/Users/paulcaughell/Documents/Syracuse - Data Science/Data Mining - IST 565/NBA Project/NBA draft results.csv")
+
+# Viewing the structure and summary of the dataframe
+str(NBA_Draft_Raw)
+summary(NBA_Draft_Raw)
+```
+
+
+```{r}
+# Removing unneeded variables
+NBA_Draft <- subset(NBA_Draft_Raw, select = c(Player, Positions, TotalHeight, Weight, Age, PriorTeam, Class))
+head(NBA_Draft)
+```
+
+The player biographical data is checked to make sure that players are not missing any values and the results indicate no observations missing values.  When quickly viewing the descriptive statistics to see if the data contained makes sense it can be seen that players have heights ranging from 5 feet 9 inches to 7 feet 5 inches and weights 160 pounds and maximum of 355.  These player physical stats align with real world values as do the ages ranging from 18 to 27 years old.   The structure of the data indicates that there are 951 observations or players in this data set greater than the 929 players that accumulated statistics.  This would indicate that not all players that are drafted play in the NBA to accumulate statistics.  The position variable indicated a factor with 11 levels or different values.  This is concerning since in basketball there are 5 positions so having 11 different labels could be an issue.  The class variable also shows 33 different levels where there should only be freshman, sophomore, junior, and senior values for the players. 
+
+```{r}
+# Checking on missing data
+nrow(NBA_Draft[!complete.cases(NBA_Players), ])
+summary(NBA_Draft)
+str(NBA_Draft)
+```
+
+To first address the class issue observations are located that match some of the values that are not valid.  The observations that have invalid class values indicate players that have prior teams that are international, so this would make sense why their date of birth year was provided instead of class.  
+
+```{r}
+head(NBA_Draft[which(NBA_Draft$Class != 'Sr' & NBA_Draft$Class != 'Jr*' & NBA_Draft$Class != 'So*' & NBA_Draft$Class != 'Fr*'),],10) 
+```
+
+Since the international players would not have accumulated any statistics in the NCAA since they did not play in it these players can be removed and the class variable refactored to reflect the reduction to the proper amount of levels of 4.  The Prior team variable can also be refactored since the international teams have now been removed. 
+
+```{r}
+# Removing international players 
+NBA_Draft <- NBA_Draft[which(NBA_Draft$Class == 'Sr' | NBA_Draft$Class == 'Jr*' | NBA_Draft$Class == 'So*' | NBA_Draft$Class == 'Fr*'),] 
+NBA_Draft$Class <- factor(NBA_Draft$Class)
+NBA_Draft$PriorTeam <- factor(NBA_Draft$PriorTeam)
+NBA_Draft$Player <- factor(NBA_Draft$Player)
+NBA_Draft$Positions <- factor(NBA_Draft$Positions)
+str(NBA_Draft)
+```
+
+The position variable is next addressed first by viewing the unique variables that it contains.  Some of the values are redundant just with different labeling like the FC and F-C as well as the GF and F-G.  The redundancy is eliminated by replacing the hyphenated values with the corresponding unhyphenated values and the positions variable refactored to reflect the reduction in levels. 
+
+```{r}
+# Viewing Position levels
+unique(NBA_Draft$Positions)
+```
+
+```{r}
+# Updating some of the position labels to match
+NBA_Draft$Positions[NBA_Draft$Positions == "F-C"] <- "FC"
+NBA_Draft$Positions[NBA_Draft$Positions == "F-G"] <- "GF"
+NBA_Draft$Positions <- factor(NBA_Draft$Positions)
+str(NBA_Draft)
+```
+
+The player biographical data is now in a structure to be combined with the players NBA win share statistic.  The merging of the data based off of the players is done and a check for any missing values that might have been introduced indicates no missing values. 
+
+```{r}
+# First Merging the NBA players stats data with the NBA draft data
+NBA <- merge(NBA_Draft,NBA_Players,by="Player")
+summary(NBA)
+str(NBA)
+nrow(NBA[!complete.cases(NBA), ])
+```
+
+The NBA win shares data is now combine with the players biographical data so the next dataset that needs to be introduced is the statistics accumulated from the NCAA games played. 
+
+```{r}
+# Reading in the collected data via CSV for NCAA players
+NCAA_Players_Raw <- read.csv("/Users/paulcaughell/Documents/Syracuse - Data Science/Data Mining - IST 565/NBA Project/NCAA Player Stats.csv")
+
+# Viewing the structure and summary of the dataframe
+str(NCAA_Players_Raw)
+summary(NCAA_Players_Raw)
+```
+
+The variables that are important to the analysis are the player name and the stats that were accumulated.  The school variable is redundant since we have the prior team variable in the previously combined dataset this can be removed as well as the timeframe that the player played in the NCAA.  
+
+```{r}
+# Selecting only the needed columns
+NCAA_Players <- subset(NCAA_Players_Raw, select = -c(From_NCAA, To_NCAA, School_NCAA))
+head(NCAA_Players)
+summary(NCAA_Players)
+```
+
+When checking how many observations are missing data there are 53 rows found. With 53 of the over 16,000 observations missing data in the NCAA stats dataset these observations are removed. 
+
+```{r}
+# Checking on the missing data from the NCAA_Players
+nrow(NCAA_Players[!complete.cases(NCAA_Players), ])
+
+# Stats missing for players droping rows from the dataframe
+NCAA_Players <- NCAA_Players[complete.cases(NCAA_Players),]
+nrow(NCAA_Players[!complete.cases(NCAA_Players), ])
+```
+
+With wide discrepancies between the games played as low as 11 and as high as 157 and minutes played ranging from 40 minutes to 5,041 minutes some normalization is required to provide meaningful analysis.  This is due to the fact that the statistics accumulated during games are a product of opportunity.  If a player does not have many games or minutes played, then they are also likely to have accumulated less statistics during that time frame.  To combat this issue the statistics are taken down to a per minute level for all variables and the minutes played taken to a per game level. 
+
+```{r}
+summary(NCAA_Players)
+
+# Normalizing stats to a per minute level since not all players played
+# The same amount
+NCAA_Norm <- NCAA_Players[,c('Player','G','MP')]
+NCAA_Norm$MinPerG <- NCAA_Players$MP/NCAA_Players$G
+NCAA_Norm$FGPerM <- NCAA_Players$FG/NCAA_Players$MP
+NCAA_Norm$FGAPerM <- NCAA_Players$FGA/NCAA_Players$MP
+NCAA_Norm$X2P_PerM <- NCAA_Players$X2P/NCAA_Players$MP
+NCAA_Norm$X2PA_PerM <- NCAA_Players$X2PA/NCAA_Players$MP
+NCAA_Norm$X3P_PerM <- NCAA_Players$X3P/NCAA_Players$MP
+NCAA_Norm$X3PA_PerM <- NCAA_Players$X3PA/NCAA_Players$MP
+NCAA_Norm$ORB_PerM <- NCAA_Players$ORB/NCAA_Players$MP
+NCAA_Norm$DRB_PerM <- NCAA_Players$DRB/NCAA_Players$MP
+NCAA_Norm$TRB_PerM <- NCAA_Players$TRB/NCAA_Players$MP
+NCAA_Norm$AST_PerM <- NCAA_Players$AST/NCAA_Players$MP
+NCAA_Norm$STL_PerM <- NCAA_Players$STL/NCAA_Players$MP
+NCAA_Norm$BLK_PerM <- NCAA_Players$BLK/NCAA_Players$MP
+NCAA_Norm$TOV_PerM <- NCAA_Players$TOV/NCAA_Players$MP
+NCAA_Norm$PF_PerM <- NCAA_Players$PF/NCAA_Players$MP
+NCAA_Norm$PTS_PerM <- NCAA_Players$PTS/NCAA_Players$MP
+NCAA_Norm$FGpct <- NCAA_Players$FG/NCAA_Players$FGA
+NCAA_Norm$X2pct <- NCAA_Players$X2P/NCAA_Players$X2PA
+NCAA_Norm$X3pct <- NCAA_Players$X3P/NCAA_Players$X3PA
+NCAA_Norm$XFTpct <- NCAA_Players$FT/NCAA_Players$FTA
+
+summary(NCAA_Norm)
+```
+
+The summary statistics indicate that missing values were entered in during the normalization process for three-point percentages for 1,134 players.  These players are pulled to see what might have caused the issue.  They are all players who never attempted a three point shot and therefore never made a three point shot so all of the missing data is provided a value of 0. 
+
+```{r}
+# Viewing the players that have missing three point percentage data
+head(NCAA_Norm[!complete.cases(NCAA_Norm),], 10)
+
+# Putting zeros in place since they did not attempt this type of shot they have a 0 percent 
+
+NCAA_Norm[is.na(NCAA_Norm)] <- 0
+NCAA_Norm[!complete.cases(NCAA_Norm), ]
+head(NCAA_Norm)
+```
+
+The data is now ready to be combined with the win shares and player biographical data.  Checking on rows with missing data shows there are 0 observations with missing data during the merge.  
+
+```{r}
+# Now merging the NBA players stats data with the NCAA stats
+fullSet <- merge(NCAA_Norm,NBA,by="Player")
+nrow(fullSet[!complete.cases(fullSet),])
+str(fullSet)
+summary(fullSet)
+
+```
+
+With the goal of projecting NBA prospects future success, a separate dataset is generated for the players that are going to be available in this year’s upcoming draft.  The players were selected by taking the players that were invited to the NBA combine, an event where NBA prospects have the opportunity to show case their skills and measurements are taken, as well as having played in the NCAA.  
+
+```{r}
+# Reading in the collected data via CSV for draft prospects
+Draft_Prospects_Raw <- read.csv("/Users/paulcaughell/Documents/Syracuse - Data Science/Data Mining - IST 565/NBA Project/DraftProspects.csv")
+# Viewing the structure and summary of the dataframe
+str(Draft_Prospects_Raw)
+summary(Draft_Prospects_Raw)
+# Checking for missing data
+nrow(Draft_Prospects_Raw[!complete.cases(Draft_Prospects_Raw),])
+# Creating new dataframe to maintain data integrity 
+Draft_Prospects <- Draft_Prospects_Raw
+```
+
+The data contains position information and again there seems to be a high number of factors.  A comparison is done with the prospect positions and the NBA positions.
+
+```{r}
+# Checking on the Unique positions for the prospects and compairing to the NBA player positions
+unique(NBA$Positions)
+unique(Draft_Prospects$Positions)
+```
+
+The draft prospects positions are updated to remove redundancies and align with the positions contained the NBA positions.
+
+```{r}
+# Updating some of the position labels to match the NBA position labels
+Draft_Prospects$Positions <- as.character(Draft_Prospects$Positions)
+Draft_Prospects$Positions[Draft_Prospects$Positions == "SG-PG"] <- "G"
+Draft_Prospects$Positions[Draft_Prospects$Positions == "PF-C"] <- "FC"
+Draft_Prospects$Positions[Draft_Prospects$Positions == "C-PF"] <- "FC"
+Draft_Prospects$Positions[Draft_Prospects$Positions == "SF-SG"] <- "GF"
+Draft_Prospects$Positions[Draft_Prospects$Positions == "SG-SF"] <- "GF"
+Draft_Prospects$Positions[Draft_Prospects$Positions == "PG-SG"] <- "G"
+Draft_Prospects$Positions <- factor(Draft_Prospects$Positions)
+str(Draft_Prospects)
+summary(Draft_Prospects)
+```
+
+The draft prospects are then merged with their NCAA statistics.  There are 53 prospects and the summary stats show reasonable data for each prospect and there is not any missing data.
+
+```{r}
+# Merging the NCAA data with the draft prospects for 2018
+DraftProspects2018 <- merge(Draft_Prospects,NCAA_Norm,by="Player")
+nrow(DraftProspects2018[!complete.cases(DraftProspects2018),])
+summary(DraftProspects2018)
+str(DraftProspects2018)
+
+```
+
+For future analysis all numerical data is categorized to allow for future analysis by taking the NBA players win shares as well as NCAA statistics and cutting each variable into 4 quarters based on the summary statistics quartiles. 
+
+```{r}
+# Transforming the all numerical variables into nominal categorical data for future analysis
+fullSetCat <- fullSet
+ProspectsCats <- DraftProspects2018
+fullSetCat$G <- cut(fullSet$G, breaks = c(0,66,100,128,160),
+              labels=c("low","mid","high","very_high"))
+ProspectsCats$G <- cut(DraftProspects2018$G, breaks = c(0,66,100,128,160),
+                         labels=c("low","mid","high","very_high"))
+fullSetCat$MP <- cut(fullSet$MP, breaks = c(0,1786,2604,3498,5000),
+                         labels=c("low","mid","high","very_high"))
+ProspectsCats$MP <- cut(DraftProspects2018$MP, breaks = c(0,1786,2604,3498,5000),
+                          labels=c("low","mid","high","very_high"))
+fullSetCat$FGPerM <- cut(fullSet$FGPerM, breaks = c(0,0.13366,0.15412,0.17472,.3),
+                         labels=c("low","mid","high","very_high"))
+ProspectsCats$FGPerM <- cut(DraftProspects2018$FGPerM, breaks = c(0,0.13366,0.15412,0.17472,.3),
+                              labels=c("low","mid","high","very_high"))
+fullSetCat$MinPerG <- cut(fullSet$MinPerG, breaks = c(0,25,29,31.5,38),
+                          labels=c("low","mid","high","very_high"))
+ProspectsCats$MinPerG <- cut(DraftProspects2018$MinPerG, breaks = c(0,25,29,31.5,38),
+                               labels=c("low","mid","high","very_high"))
+fullSetCat$FGAPerM <- cut(fullSet$FGAPerM, breaks = c(0,0.2865,0.3300,0.3729,.6),
+                         labels=c("low","mid","high","very_high"))
+ProspectsCats$FGAPerM <- cut(DraftProspects2018$FGAPerM, breaks = c(0,0.2865,0.3300,0.3729,.6),
+                               labels=c("low","mid","high","very_high"))
+fullSetCat$X2P_PerM <- cut(fullSet$X2P_PerM, breaks = c(0,0.09240,0.11688,0.14642,.3),
+                          labels=c("low","mid","high","very_high"))
+ProspectsCats$X2P_PerM <- cut(DraftProspects2018$X2P_PerM, breaks = c(0,0.09240,0.11688,0.14642,.3),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$X2PA_PerM <- cut(fullSet$X2PA_PerM, breaks = c(0,0.18834,0.23071,0.27993,.5),
+                              labels=c("low","mid","high","very_high"))
+ProspectsCats$X2PA_PerM <- cut(DraftProspects2018$X2PA_PerM, breaks = c(0,0.18834,0.23071,0.27993,.5),
+                                 labels=c("low","mid","high","very_high"))
+fullSetCat$X3P_PerM <- cut(fullSet$X3P_PerM, breaks = c(-1,0.005188,0.029680,0.051636,.3),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$X3P_PerM <- cut(DraftProspects2018$X3P_PerM, breaks = c(-1,0.005188,0.029680,0.051636,.3),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$X3PA_PerM <- cut(fullSet$X3PA_PerM, breaks = c(-1,0.01941,0.08593,0.13941,.5),
+                                 labels=c("low","mid","high","very_high"))
+ProspectsCats$X3PA_PerM <- cut(DraftProspects2018$X3PA_PerM, breaks = c(0,0.01941,0.08593,0.13941,.5),
+                                 labels=c("low","mid","high","very_high"))
+fullSetCat$ORB_PerM <- cut(fullSet$ORB_PerM, breaks = c(0,0.027973,0.051664,0.080445,.2),
+                               labels=c("low","mid","high","very_high"))
+ProspectsCats$ORB_PerM <- cut(DraftProspects2018$ORB_PerM, breaks = c(0,0.027973,0.051664,0.080445,.2),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$DRB_PerM <- cut(fullSet$DRB_PerM, breaks = c(0,0.09328,0.12252,0.16271,.3),
+                                 labels=c("low","mid","high","very_high"))
+ProspectsCats$DRB_PerM <- cut(DraftProspects2018$DRB_PerM, breaks = c(0,0.09328,0.12252,0.16271,.3),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$TRB_PerM <- cut(fullSet$TRB_PerM, breaks = c(0,0.12392,0.17499,0.24549,.5),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$TRB_PerM <- cut(DraftProspects2018$TRB_PerM, breaks = c(0,0.12392,0.17499,0.24549,.5),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$AST_PerM <- cut(fullSet$AST_PerM, breaks = c(0,0.04220,0.06318,0.09839,.3),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$AST_PerM <- cut(DraftProspects2018$AST_PerM, breaks = c(0,0.04220,0.06318,0.09839,.3),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$STL_PerM <- cut(fullSet$STL_PerM, breaks = c(0,0.026160,0.035560,0.044960,.13),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$STL_PerM <- cut(DraftProspects2018$STL_PerM, breaks = c(0,0.026160,0.035560,0.044960,.13),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$BLK_PerM <- cut(fullSet$BLK_PerM, breaks = c(0,0.007667,0.017196,0.037288,.3),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$BLK_PerM <- cut(DraftProspects2018$BLK_PerM, breaks = c(0,0.007667,0.017196,0.037288,.3),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$TOV_PerM <- cut(fullSet$TOV_PerM, breaks = c(0,0.05759,0.06923,0.08113,.2),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$TOV_PerM <- cut(DraftProspects2018$TOV_PerM, breaks = c(0,0.05759,0.06923,0.08113,.2),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$PF_PerM <- cut(fullSet$PF_PerM, breaks = c(0,0.06501,0.07777,0.09347,.2),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$PF_PerM <- cut(DraftProspects2018$PF_PerM, breaks = c(0,0.06501,0.07777,0.09347,.2),
+                               labels=c("low","mid","high","very_high"))
+fullSetCat$PTS_PerM <- cut(fullSet$PTS_PerM, breaks = c(0,0.3816,0.4375,0.4939,1),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$PTS_PerM <- cut(DraftProspects2018$PTS_PerM, breaks = c(0,0.3816,0.4375,0.4939,1),
+                                labels=c("low","mid","high","very_high"))
+fullSetCat$FGpct <- cut(fullSet$FGpct, breaks = c(0,0.4354,0.4620,0.5090,1),
+                               labels=c("low","mid","high","very_high"))
+ProspectsCats$FGpct <- cut(DraftProspects2018$FGpct, breaks = c(0,0.4354,0.4620,0.5090,1),
+                             labels=c("low","mid","high","very_high"))
+fullSetCat$X2pct <- cut(fullSet$X2pct, breaks = c(0,0.4798,0.5079,0.5440,1),
+                                labels=c("low","mid","high","very_high"))
+ProspectsCats$X2pct <- cut(DraftProspects2018$X2pct, breaks = c(0,0.4798,0.5079,0.5440,1),
+                             labels=c("low","mid","high","very_high"))
+fullSetCat$X3pct <- cut(fullSet$X3pct, breaks = c(-1,0.31,0.35,0.38,1),
+                             labels=c("low","mid","high","very_high"))
+ProspectsCats$X3pct <- cut(DraftProspects2018$X3pct, breaks = c(-1,0.31,0.35,0.38,1),
+                             labels=c("low","mid","high","very_high"))
+fullSetCat$XFTpct <- cut(fullSet$XFTpct, breaks = c(-1,0.6772,0.7333,0.7818,1),
+                             labels=c("low","mid","high","very_high"))
+ProspectsCats$XFTpct <- cut(DraftProspects2018$XFTpct, breaks = c(-1,0.6772,0.7333,0.7818,1),
+                              labels=c("low","mid","high","very_high"))
+fullSetCat$TotalHeight <- cut(fullSet$TotalHeight, breaks = c(-1,76.00,78.00,81.00,90),
+                              labels=c("short","mid","tall","very_tall"))
+ProspectsCats$TotalHeight <- cut(DraftProspects2018$TotalHeight, breaks = c(-1,76.00,78.00,81.00,90),
+                              labels=c("short","mid","tall","very_tall"))
+fullSetCat$Weight <- cut(fullSet$Weight, breaks = c(-1,198,215,234,400),
+                              labels=c("light","mid","large","heavy"))
+ProspectsCats$Weight <- cut(DraftProspects2018$Weight, breaks = c(-1,198,215,234,400),
+                         labels=c("light","mid","large","heavy"))
+fullSetCat$Age <- as.factor(fullSet$Age)
+ProspectsCats$Age <- as.factor(DraftProspects2018$Age)
+fullSetCat$XFTpct <- cut(fullSet$XFTpct, breaks = c(-1,0.6772,0.7333,0.7818,1),
+                              labels=c("low","mid","high","very_high"))
+ProspectsCats$XFTpct <- cut(DraftProspects2018$XFTpct, breaks = c(-1,0.6772,0.7333,0.7818,1),
+                              labels=c("low","mid","high","very_high"))
+fullSetCat$WS <- cut(fullSet$WS, breaks = c(-2,0.100,2.300,11.500,200),
+                              labels=c("low","mid","high","very_high"))
+summary(fullSetCat)
+str(fullSetCat)
+summary(ProspectsCats)
+str(ProspectsCats)
+
+```
+
+With all the data properly loaded and cleaned the data is ran through a linear regression to obtain the variables that contain the highest p values.  A data frame with only the variables containing high p values to run all algorithms on during the analysis to see if they might perform better. 
+
+```{r}
+# obtaining p values via linear regression
+linearModel <- lm(WS~., data=subset(fullSet, select = -c(Player, PriorTeam)))
+print(linearModel)
+summary(linearModel)
+```
+
+Data frames are selected for the high p value attributes for the numerical and categorical dataset for both the prospects and the NBA players.
+
+```{r}
+# Selecting only high p value variables
+reducedNBAnum <- subset(fullSet, select = c(Player, STL_PerM, BLK_PerM, PF_PerM, PTS_PerM, Weight, Age, WS))
+reducedProspectsnum <- subset(DraftProspects2018, select = c(Player, STL_PerM, BLK_PerM, PF_PerM, PTS_PerM, Weight, Age))
+reducedNBAcat <- subset(fullSetCat, select = c(Player, STL_PerM, BLK_PerM, PF_PerM, PTS_PerM, Weight, Age, WS))
+reducedProspectscat <- subset(ProspectsCats, select = c(Player, STL_PerM, BLK_PerM, PF_PerM, PTS_PerM, Weight, Age))
+head(reducedNBAnum)
+head(reducedProspectsnum)
+head(reducedNBAcat)
+head(reducedProspectscat)
+```
+
+
+
+```{r}
+# Creating a dataframe for ploting
+plotingDF <- fullSet
+plotingDF$WS <- fullSetCat$WS
+```
+
+
+### Exploritory Data Analysis
+
+To get a better understanding of the data that is to be analyzed correlation plots are generated for both the full data set containing the NBA players.  This allows a visual representation of how each of the variables are associated.  The larger and darker the circle the more the two variables are correlated with the blue dots having a positive correlation and the red dots a negative correlation.  With the target variable of win shares or WS the association between itself and all the other variables is weak as indicated by the small light dots. 
+
+```{r fig1, fig.height = 2.5, fig.width = 2.5}
+# Viewing coorelations in the NCAA data with NBA win shares
+coor <- cor(subset(fullSet, select = -c(Player, PriorTeam, Class, Positions)))
+corrplot(coor, method = 'circle', type = "upper")
+```
+
+```{r}
+histChart <- ggplot(fullSet, aes(x=WS))
+histChart <- histChart + geom_histogram(binwidth =2, color="white", fill="blue")
+histChart <- histChart + ggtitle("Frequency of Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "blue"))
+histChart <- histChart + scale_x_continuous(name="Frequency") +
+  scale_y_continuous(name="Win Shares")
+histChart
+```
+
+```{r}
+weightWS <- ggplot(fullSet, aes(x=WS, y=Weight))
+weightWS <- weightWS + 
+  ggtitle("Weight vs Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "Navy")) +
+  geom_text(data = head(fullSet[order(-fullSet$WS),], 10),
+  aes(label=(Player), angle=-15, hjust=1, vjust=-.5))
+weightWS <- weightWS + geom_point(aes(size=WS, color=Weight)) + geom_smooth(method=lm, se=FALSE, fullrange=TRUE, color = 'navy')
+weightWS
+```
+
+```{r}
+stealsWS <- ggplot(fullSet, aes(x=WS, y=STL_PerM))
+stealsWS <- stealsWS + 
+  ggtitle("Steals per Minute vs Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "Navy"))+
+  geom_text(data = head(fullSet[order(-fullSet$WS),], 10),
+  aes(label=(Player), angle=-15, hjust=1, vjust=-.5))
+stealsWS <- stealsWS + geom_point(aes(size=WS, color=Age)) + geom_smooth(method=lm, se=FALSE, fullrange=TRUE, color = 'navy')
+stealsWS
+```
+
+```{r}
+blocksWS <- ggplot(fullSet, aes(x=WS, y=BLK_PerM))
+blocksWS <- blocksWS + 
+  ggtitle("Blocks per Minute vs Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "Navy"))+
+  geom_text(data = head(fullSet[order(-fullSet$WS),], 10),
+  aes(label=(Player), angle=-15, hjust=1, vjust=-.5))
+blocksWS <- blocksWS + geom_point(aes(size=WS, color=Age)) + geom_smooth(method=lm, se=FALSE, fullrange=TRUE, color = 'navy')
+blocksWS
+```
+
+```{r}
+foulsWS <- ggplot(fullSet, aes(x=WS, y=PF_PerM))
+foulsWS <- foulsWS + 
+  ggtitle("Personal Fouls per Minute vs Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "Navy")) +
+  geom_text(data = head(fullSet[order(-fullSet$WS),], 10),
+  aes(label=(Player), angle=-15, hjust=1, vjust=-.5))
+foulsWS <- foulsWS + geom_point(aes(size=WS, color=Age)) + geom_smooth(method=lm, se=FALSE, fullrange=TRUE, color = 'navy')
+foulsWS
+```
+
+```{r}
+pointsWS <- ggplot(fullSet, aes(x=WS, y=PTS_PerM))
+pointsWS <- pointsWS + 
+  ggtitle("Points per Minute vs Win Shares") +
+  theme(plot.title = element_text(hjust = 0.5, color = "Navy")) +
+  geom_text(data = head(fullSet[order(-fullSet$WS),], 10),
+  aes(label=(Player), angle=-15, hjust=1, vjust=-.5))
+pointsWS <- pointsWS + geom_point(aes(size=WS, color=Age)) + geom_smooth(method=lm, se=FALSE, fullrange=TRUE, color = 'navy')
+pointsWS
+```
+
+```{r}
+plotingDF %>%
+  ggplot(aes(x=WS, y=Age, fill=WS)) +
+  geom_boxplot() +
+  ggtitle('Age vs Win Shares') +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+plotingDF %>%
+  ggplot(aes(x=WS, y=Weight, fill=WS)) +
+  geom_boxplot() +
+  ggtitle('Weight vs Win Shares') +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+## Density plots
+plotingDF %>%
+  ggplot(aes(x=PF_PerM, fill=WS)) +
+  geom_density(alpha=.7, color="black") +
+  ggtitle("Win Shares Density by Personal Fouls")
+```
+
+```{r}
+## Density plots
+plotingDF %>%
+  ggplot(aes(x=PTS_PerM, fill=WS)) +
+  geom_density(alpha=.7, color="black") +
+  ggtitle("Win Shares Density by Points per Minute")
+```
+
+## Clustering Analysis
+
+### MClust
+```{r}
+summary(fullSet)
+```
+
+Normalization of all numerical data is done by taking each value and subtracting the minimum value for that attribute in the data set and then that value is then divided by the range of the attribute.  A new dataset is created by taking the resulting normalized values to be used for clustering.  The dataset to be clustered features only the important variable to allow for less jumbled visualizations. 
+
+```{r}
+#Creating a min max function to normailze the data
+Min_Max_function <- function(x){
+  return(  (x - min(x)) /(max(x) - min(x))   )
+}
+
+clusteringDF <- as.data.frame(lapply(subset(reducedNBAnum, select = -c(Player)), Min_Max_function))
+clusteringLabels <- fullSetCat$WS
+clusteringDF <- clusteringDF[,1:(ncol(clusteringDF)-1),]
+str(clusteringDF)
+str(clusteringLabels)
+```
+
+
+```{r}
+Clust_EM <- Mclust(clusteringDF,G=4)
+(Clust_EM)
+summary(Clust_EM)
+
+plot(Clust_EM, what = "classification")
+(table(clusteringLabels, Clust_EM$classification))
+
+Clust_EM <- Mclust(clusteringDF,G=2)
+(Clust_EM)
+summary(Clust_EM)
+
+plot(Clust_EM, what = "classification")
+(table(clusteringLabels, Clust_EM$classification))
+```
+
+```{r}
+# k means clustering
+kmeansFIT<- kmeans(clusteringDF,4)
+print(kmeansFIT)
+summary(kmeansFIT)
+
+(table(clusteringLabels,kmeansFIT$cluster))
+
+clusplot(clusteringDF, kmeansFIT$cluster, color=TRUE, shade=TRUE, 
+         labels=0, lines=0)
+
+
+# Trying with 3 clusters
+kmeansFIT3<- kmeans(clusteringDF,3)
+print(kmeansFIT3)
+summary(kmeansFIT3)
+
+(table(clusteringLabels,kmeansFIT3$cluster))
+clusplot(clusteringDF, kmeansFIT3$cluster, color=TRUE, shade=TRUE, 
+         labels=0, lines=0)
+
+# Trying with 2 clusters
+kmeansFIT2<- kmeans(clusteringDF,2)
+print(kmeansFIT2)
+summary(kmeansFIT2)
+
+(table(clusteringLabels,kmeansFIT2$cluster))
+clusplot(clusteringDF, kmeansFIT2$cluster, color=TRUE, shade=TRUE, 
+         labels=0, lines=0)
+```
+
+```{r}
+# Trying hierarchical clustering
+
+# Euclidean distance
+clustering_E<- dist(clusteringDF, method = "euclidean")
+fit_E <- hclust(clustering_E, method="ward.D2")
+plot(fit_E, labels = clusteringLabels,hang = -.2, cex = 0.5) 
+rect.hclust(fit_E, k=4, border="red")
+
+# Manhattan distance
+clustering_M<- dist(clusteringDF, method = "manhattan")
+fit_M<- hclust(clustering_M, method="ward.D2")
+plot(fit_M, labels = clusteringLabels,hang = -.2, cex = 0.5)
+rect.hclust(fit_M, k=4, border="red")
+```
+
+### Cosine Similarity Clustering
+
+```{r}
+# Cosine Similarity
+clustering_Matrix <- as.matrix(clusteringDF)
+Cos_SimMatrixClustering <- cosine(clustering_Matrix)
+diag(Cos_SimMatrixClustering) <- 0 
+Cos_SimMatrixClustering
+
+# Prune edges of the tree
+edgeLimit <- .75
+Cos_SimMatrixClustering[(Cos_SimMatrixClustering < edgeLimit)] <- 0
+
+## Make the network
+(Cos_Sim_NetworkClustering <- graph_from_adjacency_matrix(Cos_SimMatrixClustering, 
+                                                    mode = 'undirected', 
+                                                    weighted = T))
+plot(Cos_Sim_NetworkClustering)
+
+tkplot(Cos_Sim_NetworkClustering, vertex.color="orange")
+
+```
+
+### Association Rules Mining
+
+```{r}
+# Targeting High WS for RHS rules
+myRules <- apriori(fullSetCat, parameter = list(supp=0.008, conf=0.7, maxlen=3),
+                   appearance = list(default="lhs",rhs="WS=high"), control = list(verbose=F))
+myRules <-sort(myRules, by="confidence", decreasing = TRUE)
+inspect(myRules)
+
+# Visualization for rules created
+plot(myRules, method = "graph", interactive=TRUE, shading = NA)
+```
+
+```{r}
+# Targeting Very High WS for RHS rules
+myRules <- apriori(fullSetCat, parameter = list(supp=0.008, conf=0.7, maxlen=3),
+                   appearance = list(default="lhs",rhs="WS=very_high"), control = list(verbose=F))
+myRules <-sort(myRules, by="confidence", decreasing = TRUE)
+inspect(myRules)
+
+# Visualization for rules created
+plot(myRules, method = "graph", interactive=TRUE, shading = NA)
+```
+
+```{r}
+# Looking for current players that fit these characteristics 
+
+subset(fullSetCat, ( FGAPerM == 'very_high' & Positions == 'C') )
+subset(fullSetCat, ( Positions == 'F' & Age == '19') )
+subset(fullSetCat, ( G == 'low' & PriorTeam == 'Texas') )
+subset(fullSetCat, ( DRB_PerM == 'very_high' & PriorTeam == 'Kentucky') )
+subset(fullSetCat, ( X3P_PerM == 'low' & Age == '19') )
+subset(fullSetCat, ( PriorTeam == 'USC') )
+subset(fullSetCat, ( MP == 'low' & PriorTeam == 'Texas') )
+subset(fullSetCat, ( G == 'low' & Positions == 'FC') )
+subset(fullSetCat, ( MP == 'mid' & PriorTeam == '19') )
+subset(fullSetCat, ( AST_PerM == 'high' & Positions == 'PF') )
+subset(fullSetCat, ( MinPerG == 'very_high' & Weight == 'heavy') )
+subset(fullSetCat, ( Positions == 'F' & Class == 'Fr*') )
+subset(fullSetCat, ( Positions == 'G' & Age == '19') )
+```
+
+```{r}
+# Looking for future prospect players that fit these characteristics 
+
+subset(ProspectsCats, ( FGAPerM == 'very_high' & Positions == 'C') )
+subset(ProspectsCats, ( Positions == 'F' & Age == '19') )
+subset(ProspectsCats, ( G == 'low' & PriorTeam == 'Texas') )
+subset(ProspectsCats, ( DRB_PerM == 'very_high' & PriorTeam == 'Kentucky') )
+subset(ProspectsCats, ( X3P_PerM == 'low' & Age == '19') )
+subset(ProspectsCats, ( PriorTeam == 'USC') )
+subset(ProspectsCats, ( MP == 'low' & PriorTeam == 'Texas') )
+subset(ProspectsCats, ( G == 'low' & Positions == 'FC') )
+subset(ProspectsCats, ( MP == 'mid' & PriorTeam == '19') )
+subset(ProspectsCats, ( AST_PerM == 'high' & Positions == 'PF') )
+subset(ProspectsCats, ( MinPerG == 'very_high' & Weight == 'heavy') )
+subset(ProspectsCats, ( Positions == 'F' & Class == 'Fr*') )
+subset(ProspectsCats, ( Positions == 'G' & Age == '19') )
+```
+
+### Naive Bayes
+
+
+```{r}
+# Maintain integreity of the orginal dataset
+bayesSet <- fullSetCat
+bayesSet <- subset(bayesSet, select = -c(Player, PriorTeam, Positions))
+
+# Ensuring that the testing and training data will not overlap
+n <- round(nrow(bayesSet)/5)
+s <- sample(1:nrow(bayesSet), n)
+
+# Create training and testing dataset
+bayesSetTest <- bayesSet[s,]
+bayesSetTrain <- bayesSet[-s,]
+
+# Inspect to ensure that there is the correct number of rows and there is no overlapping
+# Samples
+
+head(bayesSetTest)
+head(bayesSetTrain)
+nrow(bayesSetTest)
+nrow(bayesSetTrain)
+```
+
+```{r}
+# Naive Bayes
+NBModel <- naive_bayes(bayesSetTrain$WS ~., data=bayesSetTrain)
+plot(NBModel)
+
+# Classify
+NB_p2 <-  predict(NBModel, bayesSetTest[,-23], type='class')
+pred_TABLE <- table(NB_p2, bayesSetTest$WS)
+pred_TABLE
+
+sum(diag(pred_TABLE)/sum(pred_TABLE))
+```
+
+```{r}
+# Naive Bayes with Reduced data
+
+# Maintain integreity of the orginal dataset
+bayesSetreduced <- reducedNBAcat
+bayesSetreduced <- subset(bayesSetreduced, select = -c(Player))
+
+# Ensuring that the testing and training data will not overlap
+n <- round(nrow(bayesSetreduced)/5)
+s <- sample(1:nrow(bayesSetreduced), n)
+
+# Create training and testing dataset
+bayesSetTestReduced <- bayesSetreduced[s,]
+bayesSetTrainReduced <- bayesSetreduced[-s,]
+
+# Inspect to ensure that there is the correct number of rows and there is no overlapping
+# Samples
+
+head(bayesSetTestReduced)
+head(bayesSetTrainReduced)
+nrow(bayesSetTestReduced)
+nrow(bayesSetTrainReduced)
+
+# Building the model
+NBModelReduced <- naive_bayes(bayesSetTestReduced$WS ~., data=bayesSetTestReduced)
+print(NBModelReduced)
+
+plot(NBModelReduced)
+
+# Classify
+NB_p2_Reduced <-  predict(NBModelReduced, bayesSetTestReduced[,-7], type='class')
+pred_TABLE <- table(NB_p2_Reduced, bayesSetTestReduced$WS)
+pred_TABLE
+
+sum(diag(pred_TABLE)/sum(pred_TABLE))
+```
+
+
+```{r}
+# Trying to classify the future prospects
+
+bayesNames <- colnames(bayesSetTestReduced)
+bayesNames <- bayesNames[which(bayesNames != 'WS')]
+ProspectsBayes <- ProspectsCats[,c(bayesNames)]
+BayesPrediction <- predict(NBModelReduced, ProspectsBayes, type='class')
+DraftProspects2018$BayesPrediction <- BayesPrediction
+
+DraftProspects2018[,c('Player', 'BayesPrediction')]
+```
+
+### kNN - K nearest neighbors
+```{r}
+str(fullSet)
+```
+
+
+```{r}
+# Selecting the data required for knn algorithm
+knnDF <- as.data.frame(lapply(subset(fullSet, select = -c(Player, Positions, PriorTeam, Class, WS)), Min_Max_function))
+knnDF$WS <- fullSetCat$WS
+
+knnDFreduced <- as.data.frame(lapply(subset(reducedNBAnum, select = -c(Player, WS)), Min_Max_function))
+knnDFreduced$WS <- reducedNBAcat$WS
+
+# Ensuring that the testing and training data will not overlap
+n <- round(nrow(knnDF)/5)
+s <- sample(1:nrow(knnDF), n)
+nr <- round(nrow(knnDFreduced)/5)
+sr <- sample(1:nrow(knnDFreduced), nr)
+# Create training and testing dataset
+knnSetTest <- knnDF[s,]
+knnSetTrain <- knnDF[-s,]
+knnSetTestReduced <- knnDFreduced[sr,]
+knnSetTrainReduced <- knnDFreduced[-sr,]
+
+# Removing labels
+knnSetTest_numonly <- knnSetTest[,1:(ncol(knnDF)-1)]
+knnSetTest_labels <- knnSetTest$WS
+knnSetTrain_numonly <- knnSetTrain[,1:(ncol(knnDF)-1)]
+knnSetTrain_labels <- knnSetTrain$WS
+
+knnSetTest_numonlyReduced <- knnSetTestReduced[,1:(ncol(knnDFreduced)-1)]
+knnSetTest_labelsReduced <- knnSetTestReduced$WS
+knnSetTrain_numonlyReduced <- knnSetTrainReduced[,1:(ncol(knnDFreduced)-1)]
+knnSetTrain_labelsReduced <- knnSetTrainReduced$WS
+
+(head(knnSetTest_numonlyReduced ))
+(head(knnSetTest_labelsReduced))
+(head(knnSetTrain_numonlyReduced ))
+(head(knnSetTrain_labelsReduced))
+(head(knnSetTest_numonly ))
+(head(knnSetTest_labels))
+(head(knnSetTrain_numonly ))
+(head(knnSetTrain_labels))
+
+```
+
+```{r}
+# Setting up knn model for the fullset and the reduced set
+
+# Setting up the knn model
+k <- round(sqrt(nrow(fullSet)))
+kNN_fit <- class::knn(train=knnSetTrain_numonly, test=knnSetTest_numonly, 
+                      cl=knnSetTrain_labels,k = k, prob=TRUE)
+print(kNN_fit)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k <- table(kNN_fit, knnSetTest_labels)
+knn_k
+sum(diag(knn_k))/sum(knn_k)
+
+# Setting up the knn model reduced
+k <- round(sqrt(nrow(fullSet)))
+kNN_fit <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = k, prob=TRUE)
+print(kNN_fit)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k <- table(kNN_fit, knnSetTest_labelsReduced)
+knn_k
+sum(diag(knn_k))/sum(knn_k)
+
+```
+
+```{r}
+# Testing different k values on the reduced set since it performed better
+kNN_fit_15 <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = 15, prob=TRUE)
+print(kNN_fit_15)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k_15 <- table(kNN_fit_15, knnSetTest_labelsReduced)
+knn_k_15
+sum(diag(knn_k_15))/sum(knn_k_15)
+```
+
+```{r}
+# Predicition level was reduced when the k was reduced so an increase is done 
+
+# Testing different k values on the reduced set since it performed better
+kNN_fit_45 <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = 45, prob=TRUE)
+print(kNN_fit_45)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k_45 <- table(kNN_fit_45, knnSetTest_labelsReduced)
+knn_k_45
+sum(diag(knn_k_45))/sum(knn_k_45)
+```
+
+```{r}
+# Predicition level was reduced when the k was incresed so an lowering is done 
+
+# Testing different k values on the reduced set since it performed better
+kNN_fit_9 <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = 9, prob=TRUE)
+print(kNN_fit_9)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k_9 <- table(kNN_fit_9, knnSetTest_labelsReduced)
+knn_k_9
+sum(diag(knn_k_9))/sum(knn_k_9)
+```
+
+```{r}
+# Predicition level was reduced when the k was incresed so an lowering is done 
+
+# Testing different k values on the reduced set since it performed better
+kNN_fit_13 <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = 13, prob=TRUE)
+print(kNN_fit_13)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k_13 <- table(kNN_fit_13, knnSetTest_labelsReduced)
+knn_k_13
+sum(diag(knn_k_13))/sum(knn_k_13)
+```
+
+```{r}
+# Predicition level was reduced when the k was incresed so an lowering is done 
+
+# Testing different k values on the reduced set since it performed better
+kNN_fit_17 <- class::knn(train=knnSetTrain_numonlyReduced, test=knnSetTest_numonlyReduced, 
+                      cl=knnSetTrain_labelsReduced,k = 17, prob=TRUE)
+print(kNN_fit_17)
+
+# Looking to see if knn performed better than naive Bayes
+knn_k_17 <- table(kNN_fit_17, knnSetTest_labelsReduced)
+knn_k_17
+sum(diag(knn_k_17))/sum(knn_k_17)
+```
+
+```{r}
+# Getting the prospects data ready to be predicted on with 15 k the most accurate
+colnames(knnSetTest_numonlyReduced)
+knnNames <- colnames(knnSetTest_numonlyReduced)
+ProspectsKnn <- DraftProspects2018[,c(knnNames)]
+str(ProspectsKnn)
+ProspectsKnn <- as.data.frame(lapply(ProspectsKnn, Min_Max_function))
+str(ProspectsKnn)
+
+# Attempting to predict level of winshares on draft prospects
+kNN_fit_Prospects <- class::knn(train=knnSetTrain_numonlyReduced, test=ProspectsKnn, 
+                         cl=knnSetTrain_labelsReduced,k = 15, prob=TRUE)
+print(kNN_fit_Prospects)
+DraftProspects2018$knnPrediction <- kNN_fit_Prospects[1:53]
+DraftProspects2018[, c('Player', 'knnPrediction')]
+```
+
+```{r}
+# Ploting knn points per minute vs weight
+(knnplotDF <- data.frame(knnSetTest_numonlyReduced, predicted = kNN_fit_15))
+(knnplotDF2 <- data.frame(x = knnplotDF$PTS_PerM, 
+                       y = knnplotDF$Age, 
+                       predicted = knnplotDF$predicted))
+find_hull <- function(df) df[chull(df$x, df$y), ]
+
+boundary <- ddply(knnplotDF2, .variables = "predicted", .fun = find_hull)
+
+ggplot(knnplotDF, aes(PTS_PerM, Age, color = predicted, fill = predicted)) + 
+  geom_point(size = 5) + 
+  geom_polygon(data = boundary, aes(x,y), alpha = 0.5)
+```
+
+### Random Forest
+```{r}
+# Preparing data for random forest
+RFtrain <-knnSetTrain
+RFtest <- knnSetTest
+RFprospects <- ProspectsKnn
+randomForestTest_numonly <- knnSetTest_numonly 
+randomForestTest_labels <- knnSetTest_labels
+randomForestTrain_numonly <- knnSetTrain_numonly
+randomForestTrain_labels <- knnSetTrain_labels
+
+# Building random forest model
+NCAA_fit_RF <- randomForest(WS ~ . , data = RFtrain)
+print(NCAA_fit_RF)
+
+pred_RF<-predict(NCAA_fit_RF, randomForestTest_numonly) 
+rf_table <- table(pred_RF, randomForestTest_labels)
+rf_table
+
+sum(diag(rf_table))/sum(rf_table)
+
+(NCAA_fit_RF$confusion)
+NCAA_fit_RF$classes
+```
+
+
+```{r}
+# Looking at tree size
+hist(treesize(NCAA_fit_RF))
+
+# Looking at which variable were important 
+varImpPlot(NCAA_fit_RF)
+```
+```{r}
+# Building random forest model
+NCAA_fit_RF <- randomForest(WS ~ . , data = RFtrain, ntree=4000)
+print(NCAA_fit_RF)
+
+pred_RF<-predict(NCAA_fit_RF, randomForestTest_numonly) 
+rf_table <- table(pred_RF, randomForestTest_labels)
+rf_table
+
+sum(diag(rf_table))/sum(rf_table)
+
+(NCAA_fit_RF$confusion)
+NCAA_fit_RF$classes
+```
+
+```{r}
+# Looking at only the highest importance variables
+RFtrainReduced <- subset(RFtrain, select = c(STL_PerM, BLK_PerM,PF_PerM, PTS_PerM, Weight, Age, WS))
+RFtestReduced <- subset(RFtest, select = c(STL_PerM, BLK_PerM,PF_PerM, PTS_PerM, Weight, Age))
+randomForestTest_numonly_reduced <- subset(randomForestTest_numonly, select = c(STL_PerM, BLK_PerM,PF_PerM, PTS_PerM, Weight, Age))
+RFprospectsReduced <- subset(RFprospects, select = c(STL_PerM, BLK_PerM,PF_PerM, PTS_PerM, Weight, Age))
+
+# Trying again with less variables
+NCAA_fit_RF_reduced <- randomForest(WS ~ . , data = RFtrainReduced, ntree=4000)
+print(NCAA_fit_RF_reduced)
+
+pred_RF_reduced<-predict(NCAA_fit_RF_reduced, randomForestTest_numonly_reduced) 
+rf_table <- table(pred_RF_reduced, randomForestTest_labels)
+rf_table
+
+sum(diag(rf_table))/sum(rf_table)
+
+NCAA_fit_RF_reduced$confusion
+```
+
+```{r}
+# Getting the prospects data ready to be predicted on 
+
+rfNames <- colnames(randomForestTest_numonly)
+ProspectsRF <- DraftProspects2018[,c(rfNames)]
+ProspectsRF <- as.data.frame(lapply(ProspectsRF, Min_Max_function))
+
+# Attempting to predict on draft class with random forest
+
+pred_RF_prospects <-predict(NCAA_fit_RF, ProspectsRF) 
+summary(pred_RF_prospects)
+str(pred_RF_prospects)
+
+rfPrediction <- as.data.frame(pred_RF_prospects)
+
+DraftProspects2018$rfPrediction <- rfPrediction
+DraftProspects2018[,c('Player','rfPrediction')]
+
+```
+
+### Support Vector Machines
+
+```{r}
+# Preparing the data for svm algorithm
+
+# Taking all of the numerical data from the NCAA players along with only winshares from the NBA stats
+svmDF <- subset(fullSet, select = -c(Player, Positions, PriorTeam, WS, Class))
+svmDFreduced <- subset(reducedNBAnum, select = -c(Player,WS))
+
+# Making WS categorical
+svmDF$WS <- fullSetCat$WS
+svmDFreduced$WS <- reducedNBAcat$WS
+
+# Ensuring that the testing and training data will not overlap
+n <- round(nrow(svmDF)/5)
+s <- sample(1:nrow(svmDF), n)
+nr<- round(nrow(svmDF)/5)
+sr <- sample(1:nrow(svmDF), n)
+
+# Create training and testing dataset
+svmSetTest <- svmDF[s,]
+svmSetTrain <- svmDF[-s,]
+svmSetTestReduced <- svmDF[sr,]
+svmSetTrainReduced <- svmDF[-sr,]
+
+# Removing labels
+svmSetTest_numonly <- svmSetTest[,1:(ncol(svmDF)-1)]
+svmSetTest_labels <- svmSetTest$WS
+svmSetTrain_numonly <- svmSetTrain[,1:(ncol(svmDF)-1)]
+svmSetTrain_labels <- svmSetTrain$WS
+
+svmSetTest_numonlyReduced <- svmSetTestReduced[,1:(ncol(svmDF)-1)]
+svmSetTest_labelsReduced <- svmSetTestReduced$WS
+svmSetTrain_numonlyReduced <- svmSetTrainReduced[,1:(ncol(svmDF)-1)]
+svmSetTrain_labelsReduced <- svmSetTrainReduced$WS
+(head(svmSetTest_numonly ))
+(head(svmSetTest_labels))
+(head(svmSetTrain_numonly ))
+(head(svmSetTrain_labels))
+(head(svmSetTest_numonly ))
+(head(svmSetTest_labels))
+(head(svmSetTrain_numonly ))
+(head(svmSetTrain_labels))
+```
+
+```{r}
+# Testing SVM with polynomial
+SVM_fit_P <- svm(WS~., data=svmSetTrain, 
+                 kernel="polynomial", cost=.1, 
+                 scale=FALSE)
+print(SVM_fit_P)
+
+(pred_P <- predict(SVM_fit_P, svmSetTest_numonly, type="class"))
+(Ptable <- table(pred_P, svmSetTest_labels))
+
+sum(diag(Ptable))/sum(Ptable)
+
+SVM_fit_P_Reduced <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="polynomial", cost=.1, 
+                 scale=FALSE)
+print(SVM_fit_P_Reduced)
+
+(pred_P <- predict(SVM_fit_P_Reduced, svmSetTest_numonlyReduced, type="class"))
+(Ptable <- table(pred_P, svmSetTest_labelsReduced))
+
+sum(diag(Ptable))/sum(Ptable)
+```
+
+```{r}
+# Testing SVM with linear
+SVM_fit_L <- svm(WS~., data=svmSetTrain, 
+                 kernel="linear", cost=.1, 
+                 scale=FALSE)
+print(SVM_fit_L)
+
+(pred_L <- predict(SVM_fit_L, svmSetTest_numonly, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labels))
+
+sum(diag(Ltable))/sum(Ltable)
+
+SVM_fit_L_Reduced <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="linear", cost=.1, 
+                 scale=FALSE)
+print(SVM_fit_L_Reduced)
+
+(pred_L <- predict(SVM_fit_L_Reduced, svmSetTest_numonlyReduced, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labelsReduced))
+
+sum(diag(Ltable))/sum(Ltable)
+```
+
+```{r}
+# Now working with the radial kernel
+SVM_fit_R <- svm(WS~., data=svmSetTrain, 
+                 kernel="radial", cost=1, 
+                 scale=FALSE)
+print(SVM_fit_R)
+
+(pred_R <- predict(SVM_fit_R, svmSetTest_numonly, type="class"))
+(Rtable <- table(pred_R, svmSetTest_labels))
+
+sum(diag(Rtable))/sum(Rtable)
+
+SVM_fit_R <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="radial", cost=1, 
+                 scale=FALSE)
+print(SVM_fit_R)
+
+(pred_R <- predict(SVM_fit_R, svmSetTest_numonlyReduced, type="class"))
+(Rtable <- table(pred_R, svmSetTest_labels))
+
+sum(diag(Rtable))/sum(Rtable)
+```
+
+```{r}
+# Top performing SVM of linear kernel with the reduced set cost variables tested 
+
+SVM_fit_L_Reduced_3 <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="linear", cost=.3, 
+                 scale=FALSE)
+print(SVM_fit_L_Reduced_3)
+
+(pred_L <- predict(SVM_fit_L_Reduced_3, svmSetTest_numonlyReduced, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labelsReduced))
+
+sum(diag(Ltable))/sum(Ltable)
+
+SVM_fit_L_Reduced <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="linear", cost=.5, 
+                 scale=FALSE)
+print(SVM_fit_L_Reduced)
+
+(pred_L <- predict(SVM_fit_L_Reduced, svmSetTest_numonlyReduced, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labelsReduced))
+
+sum(diag(Ltable))/sum(Ltable)
+
+SVM_fit_L_Reduced <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="linear", cost=.7, 
+                 scale=FALSE)
+print(SVM_fit_L_Reduced)
+
+(pred_L <- predict(SVM_fit_L_Reduced, svmSetTest_numonlyReduced, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labelsReduced))
+
+sum(diag(Ltable))/sum(Ltable)
+
+SVM_fit_L_Reduced <- svm(WS~., data=svmSetTrainReduced, 
+                 kernel="linear", cost=1, 
+                 scale=FALSE)
+print(SVM_fit_L_Reduced)
+
+(pred_L <- predict(SVM_fit_L_Reduced, svmSetTest_numonlyReduced, type="class"))
+(Ltable <- table(pred_L, svmSetTest_labelsReduced))
+
+sum(diag(Ltable))/sum(Ltable)
+```
+```{r}
+# Plotting SVM
+str(svmSetTrain)
+plot(SVM_fit_L_Reduced_3, data=svmSetTrain, PTS_PerM~Weight)
+```
+
+```{r}
+
+# Getting the prospects data ready to be predicted on 
+
+colnames(svmSetTest_numonly)
+svmNames <- colnames(svmSetTest_numonly)
+ProspectsSVM <- DraftProspects2018[,c(svmNames)]
+str(ProspectsSVM)
+
+# Predicting with the linear kernel
+
+pred_SVM_ProspectsSVM <- (pred_L <- predict(SVM_fit_L_Reduced_3, ProspectsSVM, type="class"))
+pred_SVM_ProspectsSVM <- as.data.frame(pred_SVM_ProspectsSVM)
+DraftProspects2018$svmPrediction <- pred_SVM_ProspectsSVM
+
+DraftProspects2018[, c('Player', 'svmPrediction')]
+```
+
+```{r}
+# Viewing players with their predictions
+View(DraftProspects2018[,c('Player', 'BayesPrediction','knnPrediction', 'rfPrediction', 'svmPrediction')])
+```
+
